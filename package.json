@@ -4,7 +4,7 @@
   "description": "Template for benchmarking web based geo projects.",
   "main": "src/index.js",
   "scripts": {
-    "dev": "rm -rf dist && rollup -c rollup.config.js -w",
+    "dev": "rm -rf docs/dist && rollup -c rollup.config.js -w",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "repository": {
