@@ -1,0 +1,15 @@
+body{
+    margin: 0;
+}
+.map-grid{
+    display: flex;
+    flex-wrap: wrap;
+    height: calc(100vh - 50px);
+    margin-top: 50px
+}
+.map-grid > *{
+    flex-grow: 1;
+    min-width: 300px;
+    max-width: 100%;
+    border: 1px solid #000;
+}
