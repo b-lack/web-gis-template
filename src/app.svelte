@@ -2,8 +2,9 @@
     import NAVBAR from './components/nav-bar.svelte'
     import OL from './components/maps/openlayers.svelte'
     import LEAFLET from './components/maps/leaflet.svelte'
+    import DECKGL from './components/maps/deck-gl.svelte'
 
-    let maps = []
+    let maps = [OL, LEAFLET, DECKGL]
     let geoJson = {}
     let center = {
         latitude: 47.403001, 
@@ -20,6 +21,9 @@
                 break
             case 'leaflet':
                 maps = [...maps, LEAFLET]
+                break
+            case 'deckgl':
+                maps = [...maps, DECKGL]
                 break
         }
 
@@ -43,3 +47,9 @@
         <svelte:component this={map} center={center} changeCenter={changeCenter} geoJson={geoJson}></svelte:component>
     {/each}
 </div>
+
+<style>
+    .map-grid{
+        background-color: #333;
+    }
+</style>
