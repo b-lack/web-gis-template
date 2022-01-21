@@ -18,7 +18,7 @@
         if(prevCenter && (prevCenter.latitude !== center.latitude || prevCenter.longitude !== center.longitude || prevCenter.zoom !== center.zoom))
             setCenter(center);
 
-            if(prevGeoJson !== geoJson)
+        if(prevGeoJson !== geoJson)
             updateGeoJson(geoJson)
     }
 
@@ -29,14 +29,18 @@
         prevCenter = newCenter;
     }
     const updateGeoJson = (geoJson) => {
-        if(map && geoJson.type){
-            geoJsonLayer.addData(geoJson)
-            prevGeoJson = geoJson
-        }
+        if(!map || !geoJson.length) return
+
+        geoJsonLayer.clearLayers();
+        geoJson.forEach(element => {
+            geoJsonLayer.addData(element.geoJson)
+        });
+        prevGeoJson = geoJson
+        
     }
 
     onMount(() => {
-        map = L.map(mapElement, { zoomControl: false });
+        map = L.map(mapElement);
         setCenter(center);
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -59,4 +63,7 @@
 
 </script>
 
-<div bind:this={mapElement} class="map" ></div>
+
+<div class="map" bind:this={mapElement}></div>
+<slot></slot>
+

@@ -33,7 +33,8 @@ export default [
             }),
             serve({
                 openPage: '/docs/',
-                open: true
+                open: true,
+                port: 10010
             }),
         ]
     }

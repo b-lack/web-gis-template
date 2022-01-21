@@ -1,60 +1,41 @@
 <script>
-    export let addMap
-    export let center
-    export let geoJsonLoaded
-
-    import FILEINPUT from './file-loader.svelte'
-
-    const selectMap = (event) => {
-        console.log(event.target.value)
-        addMap(event.target.value);
-    }
-
+    export let drawerState
+    export let toggleDrawer
 </script>
 
 
 <nav class="nav-bar">
-    <FILEINPUT geoJsonLoaded={geoJsonLoaded}/>
-    <div>
-        <select on:change={selectMap}>
-            <option value="ol">...select Map</option>
-            <option value="ol">Openlayers</option>
-            <option value="leaflet">Leaflet</option>
-            <option value="deckgl">DeckGl</option>
-        </select>
+    <div on:click={toggleDrawer()}>
+        <img class="wgt-logo" alt="logo" src="./asset/favicon/android-chrome-192x192.png" width="40" height="40"/>
     </div>
-    <div class="f-grow"></div>
-    <div class="f-column">
-        <div>Longitude</div>
-        {center.longitude}
-    </div>
-    <div class="f-column">
-        <div>Latitude</div>
-        {center.latitude}
-    </div>
-    <div class="f-column">
-        <div>Zoom</div>
-        <div>{center.zoom}</div>
-    </div>
+    <!--<div>
+        <button class="wgt-button wgt-button-round {drawerState ? 'wgt-button-round-active' : 'wgt-button-round-inactive'}" on:click={toggleDrawer()}></button>
+    </div>-->
 </nav>
 
 <style>
     .nav-bar{
-        position: fixed;
+        
         display: flex;
-        flex-direction: row;
-        top: 0;
-        left: 0;
-        width: 100%;
+        flex-direction: column;
+        align-items: center;
+        z-index: 10009;
+        width: 50px;
+        min-width: auto;
+        flex-grow: unset;
+        background-color: white;
+        border: none;
     }
     .nav-bar > *{
         margin: 7px;
     }
-    .f-grow{
-        flex-grow: 1;
+    .wgt-button-round{
+        border-radius: 50%;
     }
-    .f-column{
-        display: flex;
-        flex-direction: column;
+    .wgt-button-round-active::before{
+        content: '-'
+    }
+    .wgt-button-round-inactive::before{
+        content: '+'
     }
 </style>

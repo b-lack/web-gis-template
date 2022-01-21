@@ -20,7 +20,6 @@
     let prevGeoJson
 
     $: {
-        //if(prevCenter && (prevCenter.latitude !== center.latitude || prevCenter.longitude !== center.longitude || prevCenter.zoom !== center.zoom))
         setCenter(center);
         if(prevGeoJson !== geoJson)
             updateGeoJson(geoJson)
@@ -35,11 +34,16 @@
     }
 
     const updateGeoJson = (geoJson) => {
-        if(view && geoJson.type){
-            const features = new GeoJSON({featureProjection: 'EPSG:3857'}).readFeatures(geoJson)
+        if(!geoJsonLayer) return
+        geoJsonLayer.clear();
+        
+        if(!view || !geoJson.length) return
+
+        geoJson.forEach(element => {
+            const features = new GeoJSON({featureProjection: 'EPSG:3857'}).readFeatures(element.geoJson)
             geoJsonLayer.addFeatures(features);
-            prevGeoJson = geoJson
-        }
+        });
+        prevGeoJson = geoJson
             
     }
 
@@ -49,7 +53,7 @@
         
 
         const map = new Map({
-            controls: [],
+            //controls: {attribut},
             target: mapElement,
             view: view,
             layers: [
@@ -79,4 +83,7 @@
 
 </script>
 
-<div bind:this={mapElement} class="map" ></div>
+
+<div class="map" bind:this={mapElement}></div>
+<slot></slot>
+

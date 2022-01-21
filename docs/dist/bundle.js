@@ -2,6 +2,12 @@ var GisTemplate = (function () {
     'use strict';
 
     function noop$5() { }
+    function assign$1(tar, src) {
+        // @ts-ignore
+        for (const k in src)
+            tar[k] = src[k];
+        return tar;
+    }
     function run(fn) {
         return fn();
     }
@@ -19,6 +25,52 @@ var GisTemplate = (function () {
     }
     function is_empty(obj) {
         return Object.keys(obj).length === 0;
+    }
+    function create_slot(definition, ctx, $$scope, fn) {
+        if (definition) {
+            const slot_ctx = get_slot_context(definition, ctx, $$scope, fn);
+            return definition[0](slot_ctx);
+        }
+    }
+    function get_slot_context(definition, ctx, $$scope, fn) {
+        return definition[1] && fn
+            ? assign$1($$scope.ctx.slice(), definition[1](fn(ctx)))
+            : $$scope.ctx;
+    }
+    function get_slot_changes(definition, $$scope, dirty, fn) {
+        if (definition[2] && fn) {
+            const lets = definition[2](fn(dirty));
+            if ($$scope.dirty === undefined) {
+                return lets;
+            }
+            if (typeof lets === 'object') {
+                const merged = [];
+                const len = Math.max($$scope.dirty.length, lets.length);
+                for (let i = 0; i < len; i += 1) {
+                    merged[i] = $$scope.dirty[i] | lets[i];
+                }
+                return merged;
+            }
+            return $$scope.dirty | lets;
+        }
+        return $$scope.dirty;
+    }
+    function update_slot_base(slot, slot_definition, ctx, $$scope, slot_changes, get_slot_context_fn) {
+        if (slot_changes) {
+            const slot_context = get_slot_context(slot_definition, ctx, $$scope, get_slot_context_fn);
+            slot.p(slot_context, slot_changes);
+        }
+    }
+    function get_all_dirty_from_scope($$scope) {
+        if ($$scope.ctx.length > 32) {
+            const dirty = [];
+            const length = $$scope.ctx.length / 32;
+            for (let i = 0; i < length; i++) {
+                dirty[i] = -1;
+            }
+            return dirty;
+        }
+        return -1;
     }
     function append(target, node) {
         target.appendChild(node);
@@ -85,6 +137,14 @@ var GisTemplate = (function () {
         data = '' + data;
         if (text.wholeText !== data)
             text.data = data;
+    }
+    function set_style(node, key, value, important) {
+        if (value === null) {
+            node.style.removeProperty(key);
+        }
+        else {
+            node.style.setProperty(key, value, important ? 'important' : '');
+        }
     }
 
     let current_component;
@@ -347,24 +407,443 @@ var GisTemplate = (function () {
         }
     }
 
+    /**
+     * @module helpers
+     */
+    /**
+     * Wraps a GeoJSON {@link Geometry} in a GeoJSON {@link Feature}.
+     *
+     * @name feature
+     * @param {Geometry} geometry input geometry
+     * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+     * @param {Object} [options={}] Optional Parameters
+     * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+     * @param {string|number} [options.id] Identifier associated with the Feature
+     * @returns {Feature} a GeoJSON Feature
+     * @example
+     * var geometry = {
+     *   "type": "Point",
+     *   "coordinates": [110, 50]
+     * };
+     *
+     * var feature = turf.feature(geometry);
+     *
+     * //=feature
+     */
+    function feature(geom, properties, options) {
+        if (options === void 0) { options = {}; }
+        var feat = { type: "Feature" };
+        if (options.id === 0 || options.id) {
+            feat.id = options.id;
+        }
+        if (options.bbox) {
+            feat.bbox = options.bbox;
+        }
+        feat.properties = properties || {};
+        feat.geometry = geom;
+        return feat;
+    }
+    /**
+     * Creates a {@link Point} {@link Feature} from a Position.
+     *
+     * @name point
+     * @param {Array<number>} coordinates longitude, latitude position (each in decimal degrees)
+     * @param {Object} [properties={}] an Object of key-value pairs to add as properties
+     * @param {Object} [options={}] Optional Parameters
+     * @param {Array<number>} [options.bbox] Bounding Box Array [west, south, east, north] associated with the Feature
+     * @param {string|number} [options.id] Identifier associated with the Feature
+     * @returns {Feature<Point>} a Point feature
+     * @example
+     * var point = turf.point([-75.343, 39.984]);
+     *
+     * //=point
+     */
+    function point(coordinates, properties, options) {
+        if (options === void 0) { options = {}; }
+        if (!coordinates) {
+            throw new Error("coordinates is required");
+        }
+        if (!Array.isArray(coordinates)) {
+            throw new Error("coordinates must be an Array");
+        }
+        if (coordinates.length < 2) {
+            throw new Error("coordinates must be at least 2 numbers long");
+        }
+        if (!isNumber(coordinates[0]) || !isNumber(coordinates[1])) {
+            throw new Error("coordinates must contain numbers");
+        }
+        var geom = {
+            type: "Point",
+            coordinates: coordinates,
+        };
+        return feature(geom, properties, options);
+    }
+    /**
+     * isNumber
+     *
+     * @param {*} num Number to validate
+     * @returns {boolean} true/false
+     * @example
+     * turf.isNumber(123)
+     * //=true
+     * turf.isNumber('foo')
+     * //=false
+     */
+    function isNumber(num) {
+        return !isNaN(num) && num !== null && !Array.isArray(num);
+    }
+
+    /**
+     * Callback for coordEach
+     *
+     * @callback coordEachCallback
+     * @param {Array<number>} currentCoord The current coordinate being processed.
+     * @param {number} coordIndex The current index of the coordinate being processed.
+     * @param {number} featureIndex The current index of the Feature being processed.
+     * @param {number} multiFeatureIndex The current index of the Multi-Feature being processed.
+     * @param {number} geometryIndex The current index of the Geometry being processed.
+     */
+
+    /**
+     * Iterate over coordinates in any GeoJSON object, similar to Array.forEach()
+     *
+     * @name coordEach
+     * @param {FeatureCollection|Feature|Geometry} geojson any GeoJSON object
+     * @param {Function} callback a method that takes (currentCoord, coordIndex, featureIndex, multiFeatureIndex)
+     * @param {boolean} [excludeWrapCoord=false] whether or not to include the final coordinate of LinearRings that wraps the ring in its iteration.
+     * @returns {void}
+     * @example
+     * var features = turf.featureCollection([
+     *   turf.point([26, 37], {"foo": "bar"}),
+     *   turf.point([36, 53], {"hello": "world"})
+     * ]);
+     *
+     * turf.coordEach(features, function (currentCoord, coordIndex, featureIndex, multiFeatureIndex, geometryIndex) {
+     *   //=currentCoord
+     *   //=coordIndex
+     *   //=featureIndex
+     *   //=multiFeatureIndex
+     *   //=geometryIndex
+     * });
+     */
+    function coordEach(geojson, callback, excludeWrapCoord) {
+      // Handles null Geometry -- Skips this GeoJSON
+      if (geojson === null) return;
+      var j,
+        k,
+        l,
+        geometry,
+        stopG,
+        coords,
+        geometryMaybeCollection,
+        wrapShrink = 0,
+        coordIndex = 0,
+        isGeometryCollection,
+        type = geojson.type,
+        isFeatureCollection = type === "FeatureCollection",
+        isFeature = type === "Feature",
+        stop = isFeatureCollection ? geojson.features.length : 1;
+
+      // This logic may look a little weird. The reason why it is that way
+      // is because it's trying to be fast. GeoJSON supports multiple kinds
+      // of objects at its root: FeatureCollection, Features, Geometries.
+      // This function has the responsibility of handling all of them, and that
+      // means that some of the `for` loops you see below actually just don't apply
+      // to certain inputs. For instance, if you give this just a
+      // Point geometry, then both loops are short-circuited and all we do
+      // is gradually rename the input until it's called 'geometry'.
+      //
+      // This also aims to allocate as few resources as possible: just a
+      // few numbers and booleans, rather than any temporary arrays as would
+      // be required with the normalization approach.
+      for (var featureIndex = 0; featureIndex < stop; featureIndex++) {
+        geometryMaybeCollection = isFeatureCollection
+          ? geojson.features[featureIndex].geometry
+          : isFeature
+          ? geojson.geometry
+          : geojson;
+        isGeometryCollection = geometryMaybeCollection
+          ? geometryMaybeCollection.type === "GeometryCollection"
+          : false;
+        stopG = isGeometryCollection
+          ? geometryMaybeCollection.geometries.length
+          : 1;
+
+        for (var geomIndex = 0; geomIndex < stopG; geomIndex++) {
+          var multiFeatureIndex = 0;
+          var geometryIndex = 0;
+          geometry = isGeometryCollection
+            ? geometryMaybeCollection.geometries[geomIndex]
+            : geometryMaybeCollection;
+
+          // Handles null Geometry -- Skips this geometry
+          if (geometry === null) continue;
+          coords = geometry.coordinates;
+          var geomType = geometry.type;
+
+          wrapShrink =
+            excludeWrapCoord &&
+            (geomType === "Polygon" || geomType === "MultiPolygon")
+              ? 1
+              : 0;
+
+          switch (geomType) {
+            case null:
+              break;
+            case "Point":
+              if (
+                callback(
+                  coords,
+                  coordIndex,
+                  featureIndex,
+                  multiFeatureIndex,
+                  geometryIndex
+                ) === false
+              )
+                return false;
+              coordIndex++;
+              multiFeatureIndex++;
+              break;
+            case "LineString":
+            case "MultiPoint":
+              for (j = 0; j < coords.length; j++) {
+                if (
+                  callback(
+                    coords[j],
+                    coordIndex,
+                    featureIndex,
+                    multiFeatureIndex,
+                    geometryIndex
+                  ) === false
+                )
+                  return false;
+                coordIndex++;
+                if (geomType === "MultiPoint") multiFeatureIndex++;
+              }
+              if (geomType === "LineString") multiFeatureIndex++;
+              break;
+            case "Polygon":
+            case "MultiLineString":
+              for (j = 0; j < coords.length; j++) {
+                for (k = 0; k < coords[j].length - wrapShrink; k++) {
+                  if (
+                    callback(
+                      coords[j][k],
+                      coordIndex,
+                      featureIndex,
+                      multiFeatureIndex,
+                      geometryIndex
+                    ) === false
+                  )
+                    return false;
+                  coordIndex++;
+                }
+                if (geomType === "MultiLineString") multiFeatureIndex++;
+                if (geomType === "Polygon") geometryIndex++;
+              }
+              if (geomType === "Polygon") multiFeatureIndex++;
+              break;
+            case "MultiPolygon":
+              for (j = 0; j < coords.length; j++) {
+                geometryIndex = 0;
+                for (k = 0; k < coords[j].length; k++) {
+                  for (l = 0; l < coords[j][k].length - wrapShrink; l++) {
+                    if (
+                      callback(
+                        coords[j][k][l],
+                        coordIndex,
+                        featureIndex,
+                        multiFeatureIndex,
+                        geometryIndex
+                      ) === false
+                    )
+                      return false;
+                    coordIndex++;
+                  }
+                  geometryIndex++;
+                }
+                multiFeatureIndex++;
+              }
+              break;
+            case "GeometryCollection":
+              for (j = 0; j < geometry.geometries.length; j++)
+                if (
+                  coordEach(geometry.geometries[j], callback, excludeWrapCoord) ===
+                  false
+                )
+                  return false;
+              break;
+            default:
+              throw new Error("Unknown Geometry Type");
+          }
+        }
+      }
+    }
+
+    /**
+     * Takes a set of features, calculates the bbox of all input features, and returns a bounding box.
+     *
+     * @name bbox
+     * @param {GeoJSON} geojson any GeoJSON object
+     * @returns {BBox} bbox extent in [minX, minY, maxX, maxY] order
+     * @example
+     * var line = turf.lineString([[-74, 40], [-78, 42], [-82, 35]]);
+     * var bbox = turf.bbox(line);
+     * var bboxPolygon = turf.bboxPolygon(bbox);
+     *
+     * //addToMap
+     * var addToMap = [line, bboxPolygon]
+     */
+    function bbox(geojson) {
+        var result = [Infinity, Infinity, -Infinity, -Infinity];
+        coordEach(geojson, function (coord) {
+            if (result[0] > coord[0]) {
+                result[0] = coord[0];
+            }
+            if (result[1] > coord[1]) {
+                result[1] = coord[1];
+            }
+            if (result[2] < coord[0]) {
+                result[2] = coord[0];
+            }
+            if (result[3] < coord[1]) {
+                result[3] = coord[1];
+            }
+        });
+        return result;
+    }
+    bbox["default"] = bbox;
+
+    /**
+     * Takes a {@link Feature} or {@link FeatureCollection} and returns the absolute center point of all features.
+     *
+     * @name center
+     * @param {GeoJSON} geojson GeoJSON to be centered
+     * @param {Object} [options={}] Optional parameters
+     * @param {Object} [options.properties={}] Translate GeoJSON Properties to Point
+     * @param {Object} [options.bbox={}] Translate GeoJSON BBox to Point
+     * @param {Object} [options.id={}] Translate GeoJSON Id to Point
+     * @returns {Feature<Point>} a Point feature at the absolute center point of all input features
+     * @example
+     * var features = turf.points([
+     *   [-97.522259, 35.4691],
+     *   [-97.502754, 35.463455],
+     *   [-97.508269, 35.463245]
+     * ]);
+     *
+     * var center = turf.center(features);
+     *
+     * //addToMap
+     * var addToMap = [features, center]
+     * center.properties['marker-size'] = 'large';
+     * center.properties['marker-color'] = '#000';
+     */
+    function center(geojson, options) {
+        if (options === void 0) { options = {}; }
+        var ext = bbox(geojson);
+        var x = (ext[0] + ext[2]) / 2;
+        var y = (ext[1] + ext[3]) / 2;
+        return point([x, y], options.properties, options);
+    }
+
+    /* src/components/nav-bar.svelte generated by Svelte v3.46.0 */
+
+    function add_css$4(target) {
+    	append_styles(target, "svelte-1t9a8b5", ".nav-bar.svelte-1t9a8b5.svelte-1t9a8b5{display:flex;flex-direction:column;align-items:center;z-index:10009;width:50px;min-width:auto;flex-grow:unset;background-color:white;border:none}.nav-bar.svelte-1t9a8b5>.svelte-1t9a8b5{margin:7px}");
+    }
+
+    function create_fragment$8(ctx) {
+    	let nav;
+    	let div;
+    	let mounted;
+    	let dispose;
+
+    	return {
+    		c() {
+    			nav = element("nav");
+    			div = element("div");
+    			div.innerHTML = `<img class="wgt-logo" alt="logo" src="./asset/favicon/android-chrome-192x192.png" width="40" height="40"/>`;
+    			attr(div, "class", "svelte-1t9a8b5");
+    			attr(nav, "class", "nav-bar svelte-1t9a8b5");
+    		},
+    		m(target, anchor) {
+    			insert(target, nav, anchor);
+    			append(nav, div);
+
+    			if (!mounted) {
+    				dispose = listen$1(div, "click", function () {
+    					if (is_function(/*toggleDrawer*/ ctx[0]())) /*toggleDrawer*/ ctx[0]().apply(this, arguments);
+    				});
+
+    				mounted = true;
+    			}
+    		},
+    		p(new_ctx, [dirty]) {
+    			ctx = new_ctx;
+    		},
+    		i: noop$5,
+    		o: noop$5,
+    		d(detaching) {
+    			if (detaching) detach(nav);
+    			mounted = false;
+    			dispose();
+    		}
+    	};
+    }
+
+    function instance$8($$self, $$props, $$invalidate) {
+    	let { drawerState } = $$props;
+    	let { toggleDrawer } = $$props;
+
+    	$$self.$$set = $$props => {
+    		if ('drawerState' in $$props) $$invalidate(1, drawerState = $$props.drawerState);
+    		if ('toggleDrawer' in $$props) $$invalidate(0, toggleDrawer = $$props.toggleDrawer);
+    	};
+
+    	return [toggleDrawer, drawerState];
+    }
+
+    class Nav_bar extends SvelteComponent {
+    	constructor(options) {
+    		super();
+    		init(this, options, instance$8, create_fragment$8, safe_not_equal, { drawerState: 1, toggleDrawer: 0 }, add_css$4);
+    	}
+    }
+
     /* src/components/file-loader.svelte generated by Svelte v3.46.0 */
 
-    function create_fragment$5(ctx) {
+    function create_fragment$7(ctx) {
+    	let button;
+    	let t1;
     	let input;
     	let mounted;
     	let dispose;
 
     	return {
     		c() {
+    			button = element("button");
+    			button.textContent = ".geojson/.json";
+    			t1 = space();
     			input = element("input");
+    			attr(button, "class", "wgt-button");
+    			attr(button, "type", "button");
+    			set_style(input, "display", "none");
     			attr(input, "type", "file");
     			attr(input, "accept", "application/JSON");
+    			input.multiple = true;
     		},
     		m(target, anchor) {
+    			insert(target, button, anchor);
+    			insert(target, t1, anchor);
     			insert(target, input, anchor);
+    			/*input_binding*/ ctx[4](input);
 
     			if (!mounted) {
-    				dispose = listen$1(input, "change", /*loadGeoJson*/ ctx[0]);
+    				dispose = [
+    					listen$1(button, "click", /*triggerUpload*/ ctx[2]),
+    					listen$1(input, "change", /*loadGeoJson*/ ctx[1])
+    				];
+
     				mounted = true;
     			}
     		},
@@ -372,225 +851,648 @@ var GisTemplate = (function () {
     		i: noop$5,
     		o: noop$5,
     		d(detaching) {
+    			if (detaching) detach(button);
+    			if (detaching) detach(t1);
     			if (detaching) detach(input);
+    			/*input_binding*/ ctx[4](null);
     			mounted = false;
-    			dispose();
+    			run_all(dispose);
     		}
     	};
     }
 
-    function instance$5($$self, $$props, $$invalidate) {
+    function instance$7($$self, $$props, $$invalidate) {
     	let { geoJsonLoaded } = $$props;
+    	let fileInput;
 
-    	const onReaderLoad = event => {
+    	const onReaderLoad = (fileName, event) => {
     		try {
     			var obj = JSON.parse(event.target.result);
-    			if (obj.type) geoJsonLoaded(obj);
+    			if (obj.type) geoJsonLoaded(fileName, obj);
     		} catch(e) {
     			console.log(e);
     		}
     	};
 
-    	const loadGeoJson = event => {
+    	const readFile = file => {
     		var reader = new FileReader();
-    		reader.onload = onReaderLoad;
-    		reader.readAsText(event.target.files[0]);
+    		reader.onload = event => onReaderLoad(file.name, event);
+    		reader.readAsText(file);
     	};
+
+    	const loadGeoJson = event => {
+    		const files = event.target.files;
+
+    		for (var i = 0; i < files.length; i++) {
+    			readFile(files[i]);
+    		}
+    	};
+
+    	const triggerUpload = e => {
+    		e.preventDefault();
+    		fileInput.click();
+    	};
+
+    	function input_binding($$value) {
+    		binding_callbacks[$$value ? 'unshift' : 'push'](() => {
+    			fileInput = $$value;
+    			$$invalidate(0, fileInput);
+    		});
+    	}
 
     	$$self.$$set = $$props => {
-    		if ('geoJsonLoaded' in $$props) $$invalidate(1, geoJsonLoaded = $$props.geoJsonLoaded);
+    		if ('geoJsonLoaded' in $$props) $$invalidate(3, geoJsonLoaded = $$props.geoJsonLoaded);
     	};
 
-    	return [loadGeoJson, geoJsonLoaded];
+    	return [fileInput, loadGeoJson, triggerUpload, geoJsonLoaded, input_binding];
     }
 
     class File_loader extends SvelteComponent {
     	constructor(options) {
     		super();
-    		init(this, options, instance$5, create_fragment$5, safe_not_equal, { geoJsonLoaded: 1 });
+    		init(this, options, instance$7, create_fragment$7, safe_not_equal, { geoJsonLoaded: 3 });
     	}
     }
 
-    /* src/components/nav-bar.svelte generated by Svelte v3.46.0 */
+    /* src/components/map-selection.svelte generated by Svelte v3.46.0 */
 
-    function add_css$1(target) {
-    	append_styles(target, "svelte-1y2mp4k", ".nav-bar.svelte-1y2mp4k.svelte-1y2mp4k{position:fixed;display:flex;flex-direction:row;top:0;left:0;width:100%}.nav-bar.svelte-1y2mp4k>.svelte-1y2mp4k{margin:7px}.f-grow.svelte-1y2mp4k.svelte-1y2mp4k{flex-grow:1}.f-column.svelte-1y2mp4k.svelte-1y2mp4k{display:flex;flex-direction:column}");
+    function add_css$3(target) {
+    	append_styles(target, "svelte-876zt1", ".wgt-map-selection.svelte-876zt1{padding:0 10px 10px 10px;cursor:pointer}.wgt-map-selection.svelte-876zt1:hover{border-bottom:5px solid rgba(139, 0, 139, .3)}.wgt-map-selection-active.svelte-876zt1{border-bottom:5px solid darkmagenta !important}");
     }
 
-    function create_fragment$4(ctx) {
-    	let nav;
-    	let fileinput;
+    function get_each_context$2(ctx, list, i) {
+    	const child_ctx = ctx.slice();
+    	child_ctx[2] = list[i];
+    	return child_ctx;
+    }
+
+    // (10:4) {#each mapAvailable as map}
+    function create_each_block$2(ctx) {
+    	let div;
+    	let t0_value = /*map*/ ctx[2].name + "";
     	let t0;
-    	let div0;
-    	let select;
-    	let option0;
-    	let option1;
-    	let option2;
-    	let option3;
-    	let t5;
-    	let div1;
-    	let t6;
-    	let div3;
-    	let div2;
-    	let t8;
-    	let t9_value = /*center*/ ctx[0].longitude + "";
-    	let t9;
-    	let t10;
-    	let div5;
-    	let div4;
-    	let t12;
-    	let t13_value = /*center*/ ctx[0].latitude + "";
-    	let t13;
-    	let t14;
-    	let div8;
-    	let div6;
-    	let t16;
-    	let div7;
-    	let t17_value = /*center*/ ctx[0].zoom + "";
-    	let t17;
-    	let current;
+    	let t1;
+    	let div_class_value;
     	let mounted;
     	let dispose;
 
-    	fileinput = new File_loader({
-    			props: { geoJsonLoaded: /*geoJsonLoaded*/ ctx[1] }
-    		});
-
     	return {
     		c() {
-    			nav = element("nav");
-    			create_component(fileinput.$$.fragment);
-    			t0 = space();
-    			div0 = element("div");
-    			select = element("select");
-    			option0 = element("option");
-    			option0.textContent = "...select Map";
-    			option1 = element("option");
-    			option1.textContent = "Openlayers";
-    			option2 = element("option");
-    			option2.textContent = "Leaflet";
-    			option3 = element("option");
-    			option3.textContent = "DeckGl";
-    			t5 = space();
-    			div1 = element("div");
-    			t6 = space();
-    			div3 = element("div");
-    			div2 = element("div");
-    			div2.textContent = "Longitude";
-    			t8 = space();
-    			t9 = text(t9_value);
-    			t10 = space();
-    			div5 = element("div");
-    			div4 = element("div");
-    			div4.textContent = "Latitude";
-    			t12 = space();
-    			t13 = text(t13_value);
-    			t14 = space();
-    			div8 = element("div");
-    			div6 = element("div");
-    			div6.textContent = "Zoom";
-    			t16 = space();
-    			div7 = element("div");
-    			t17 = text(t17_value);
-    			option0.__value = "ol";
-    			option0.value = option0.__value;
-    			option1.__value = "ol";
-    			option1.value = option1.__value;
-    			option2.__value = "leaflet";
-    			option2.value = option2.__value;
-    			option3.__value = "deckgl";
-    			option3.value = option3.__value;
-    			attr(div0, "class", "svelte-1y2mp4k");
-    			attr(div1, "class", "f-grow svelte-1y2mp4k");
-    			attr(div3, "class", "f-column svelte-1y2mp4k");
-    			attr(div5, "class", "f-column svelte-1y2mp4k");
-    			attr(div8, "class", "f-column svelte-1y2mp4k");
-    			attr(nav, "class", "nav-bar svelte-1y2mp4k");
+    			div = element("div");
+    			t0 = text(t0_value);
+    			t1 = space();
+    			attr(div, "class", div_class_value = "wgt-map-selection wgt-map-selection-" + (/*map*/ ctx[2].visible ? 'active' : '') + " svelte-876zt1");
     		},
     		m(target, anchor) {
-    			insert(target, nav, anchor);
-    			mount_component(fileinput, nav, null);
-    			append(nav, t0);
-    			append(nav, div0);
-    			append(div0, select);
-    			append(select, option0);
-    			append(select, option1);
-    			append(select, option2);
-    			append(select, option3);
-    			append(nav, t5);
-    			append(nav, div1);
-    			append(nav, t6);
-    			append(nav, div3);
-    			append(div3, div2);
-    			append(div3, t8);
-    			append(div3, t9);
-    			append(nav, t10);
-    			append(nav, div5);
-    			append(div5, div4);
-    			append(div5, t12);
-    			append(div5, t13);
-    			append(nav, t14);
-    			append(nav, div8);
-    			append(div8, div6);
-    			append(div8, t16);
-    			append(div8, div7);
-    			append(div7, t17);
-    			current = true;
+    			insert(target, div, anchor);
+    			append(div, t0);
+    			append(div, t1);
 
     			if (!mounted) {
-    				dispose = listen$1(select, "change", /*selectMap*/ ctx[2]);
+    				dispose = listen$1(div, "click", function () {
+    					if (is_function(/*changeMapVisibility*/ ctx[1](/*map*/ ctx[2], !/*map*/ ctx[2].visible, singleView))) /*changeMapVisibility*/ ctx[1](/*map*/ ctx[2], !/*map*/ ctx[2].visible, singleView).apply(this, arguments);
+    				});
+
     				mounted = true;
     			}
     		},
-    		p(ctx, [dirty]) {
-    			const fileinput_changes = {};
-    			if (dirty & /*geoJsonLoaded*/ 2) fileinput_changes.geoJsonLoaded = /*geoJsonLoaded*/ ctx[1];
-    			fileinput.$set(fileinput_changes);
-    			if ((!current || dirty & /*center*/ 1) && t9_value !== (t9_value = /*center*/ ctx[0].longitude + "")) set_data(t9, t9_value);
-    			if ((!current || dirty & /*center*/ 1) && t13_value !== (t13_value = /*center*/ ctx[0].latitude + "")) set_data(t13, t13_value);
-    			if ((!current || dirty & /*center*/ 1) && t17_value !== (t17_value = /*center*/ ctx[0].zoom + "")) set_data(t17, t17_value);
-    		},
-    		i(local) {
-    			if (current) return;
-    			transition_in(fileinput.$$.fragment, local);
-    			current = true;
-    		},
-    		o(local) {
-    			transition_out(fileinput.$$.fragment, local);
-    			current = false;
+    		p(new_ctx, dirty) {
+    			ctx = new_ctx;
+    			if (dirty & /*mapAvailable*/ 1 && t0_value !== (t0_value = /*map*/ ctx[2].name + "")) set_data(t0, t0_value);
+
+    			if (dirty & /*mapAvailable*/ 1 && div_class_value !== (div_class_value = "wgt-map-selection wgt-map-selection-" + (/*map*/ ctx[2].visible ? 'active' : '') + " svelte-876zt1")) {
+    				attr(div, "class", div_class_value);
+    			}
     		},
     		d(detaching) {
-    			if (detaching) detach(nav);
-    			destroy_component(fileinput);
+    			if (detaching) detach(div);
     			mounted = false;
     			dispose();
     		}
     	};
     }
 
-    function instance$4($$self, $$props, $$invalidate) {
-    	let { addMap } = $$props;
-    	let { center } = $$props;
-    	let { geoJsonLoaded } = $$props;
+    function create_fragment$6(ctx) {
+    	let div;
+    	let each_value = /*mapAvailable*/ ctx[0];
+    	let each_blocks = [];
 
-    	const selectMap = event => {
-    		console.log(event.target.value);
-    		addMap(event.target.value);
+    	for (let i = 0; i < each_value.length; i += 1) {
+    		each_blocks[i] = create_each_block$2(get_each_context$2(ctx, each_value, i));
+    	}
+
+    	return {
+    		c() {
+    			div = element("div");
+
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].c();
+    			}
+
+    			attr(div, "class", "wgt-row");
+    		},
+    		m(target, anchor) {
+    			insert(target, div, anchor);
+
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].m(div, null);
+    			}
+    		},
+    		p(ctx, [dirty]) {
+    			if (dirty & /*mapAvailable, changeMapVisibility, singleView*/ 3) {
+    				each_value = /*mapAvailable*/ ctx[0];
+    				let i;
+
+    				for (i = 0; i < each_value.length; i += 1) {
+    					const child_ctx = get_each_context$2(ctx, each_value, i);
+
+    					if (each_blocks[i]) {
+    						each_blocks[i].p(child_ctx, dirty);
+    					} else {
+    						each_blocks[i] = create_each_block$2(child_ctx);
+    						each_blocks[i].c();
+    						each_blocks[i].m(div, null);
+    					}
+    				}
+
+    				for (; i < each_blocks.length; i += 1) {
+    					each_blocks[i].d(1);
+    				}
+
+    				each_blocks.length = each_value.length;
+    			}
+    		},
+    		i: noop$5,
+    		o: noop$5,
+    		d(detaching) {
+    			if (detaching) detach(div);
+    			destroy_each(each_blocks, detaching);
+    		}
     	};
-
-    	$$self.$$set = $$props => {
-    		if ('addMap' in $$props) $$invalidate(3, addMap = $$props.addMap);
-    		if ('center' in $$props) $$invalidate(0, center = $$props.center);
-    		if ('geoJsonLoaded' in $$props) $$invalidate(1, geoJsonLoaded = $$props.geoJsonLoaded);
-    	};
-
-    	return [center, geoJsonLoaded, selectMap, addMap];
     }
 
-    class Nav_bar extends SvelteComponent {
+    let singleView = true;
+
+    function instance$6($$self, $$props, $$invalidate) {
+    	let { mapAvailable } = $$props;
+    	let { changeMapVisibility } = $$props;
+
+    	$$self.$$set = $$props => {
+    		if ('mapAvailable' in $$props) $$invalidate(0, mapAvailable = $$props.mapAvailable);
+    		if ('changeMapVisibility' in $$props) $$invalidate(1, changeMapVisibility = $$props.changeMapVisibility);
+    	};
+
+    	return [mapAvailable, changeMapVisibility];
+    }
+
+    class Map_selection extends SvelteComponent {
     	constructor(options) {
     		super();
-    		init(this, options, instance$4, create_fragment$4, safe_not_equal, { addMap: 3, center: 0, geoJsonLoaded: 1 }, add_css$1);
+    		init(this, options, instance$6, create_fragment$6, safe_not_equal, { mapAvailable: 0, changeMapVisibility: 1 }, add_css$3);
+    	}
+    }
+
+    /* src/components/layer-list.svelte generated by Svelte v3.46.0 */
+
+    function add_css$2(target) {
+    	append_styles(target, "svelte-1k2cgxj", ".wgt-row.svelte-1k2cgxj{border-bottom:1px solid #ddd;padding:10px}");
+    }
+
+    function get_each_context$1(ctx, list, i) {
+    	const child_ctx = ctx.slice();
+    	child_ctx[3] = list[i];
+    	return child_ctx;
+    }
+
+    // (10:0) {#each geoJson as layer}
+    function create_each_block$1(ctx) {
+    	let div2;
+    	let div0;
+    	let b;
+    	let t0_value = /*layer*/ ctx[3].fileName + "";
+    	let t0;
+    	let br0;
+    	let t1_value = /*layer*/ ctx[3].geoJson.type + "";
+    	let t1;
+    	let t2;
+    	let div1;
+    	let t3_value = /*layer*/ ctx[3].geoJson.features.length + "";
+    	let t3;
+    	let br1;
+    	let t4;
+    	let span0;
+    	let t6;
+    	let span1;
+    	let t8;
+    	let mounted;
+    	let dispose;
+
+    	return {
+    		c() {
+    			div2 = element("div");
+    			div0 = element("div");
+    			b = element("b");
+    			t0 = text(t0_value);
+    			br0 = element("br");
+    			t1 = text(t1_value);
+    			t2 = space();
+    			div1 = element("div");
+    			t3 = text(t3_value);
+    			br1 = element("br");
+    			t4 = space();
+    			span0 = element("span");
+    			span0.textContent = "remove";
+    			t6 = space();
+    			span1 = element("span");
+    			span1.textContent = "focus";
+    			t8 = space();
+    			attr(div2, "class", "wgt-row svelte-1k2cgxj");
+    		},
+    		m(target, anchor) {
+    			insert(target, div2, anchor);
+    			append(div2, div0);
+    			append(div0, b);
+    			append(b, t0);
+    			append(div0, br0);
+    			append(div0, t1);
+    			append(div2, t2);
+    			append(div2, div1);
+    			append(div1, t3);
+    			append(div1, br1);
+    			append(div1, t4);
+    			append(div1, span0);
+    			append(div1, t6);
+    			append(div1, span1);
+    			append(div2, t8);
+
+    			if (!mounted) {
+    				dispose = [
+    					listen$1(span0, "click", function () {
+    						if (is_function(/*removeLayer*/ ctx[1](/*layer*/ ctx[3]))) /*removeLayer*/ ctx[1](/*layer*/ ctx[3]).apply(this, arguments);
+    					}),
+    					listen$1(span1, "click", function () {
+    						if (is_function(/*focusLayer*/ ctx[2](/*layer*/ ctx[3]))) /*focusLayer*/ ctx[2](/*layer*/ ctx[3]).apply(this, arguments);
+    					})
+    				];
+
+    				mounted = true;
+    			}
+    		},
+    		p(new_ctx, dirty) {
+    			ctx = new_ctx;
+    			if (dirty & /*geoJson*/ 1 && t0_value !== (t0_value = /*layer*/ ctx[3].fileName + "")) set_data(t0, t0_value);
+    			if (dirty & /*geoJson*/ 1 && t1_value !== (t1_value = /*layer*/ ctx[3].geoJson.type + "")) set_data(t1, t1_value);
+    			if (dirty & /*geoJson*/ 1 && t3_value !== (t3_value = /*layer*/ ctx[3].geoJson.features.length + "")) set_data(t3, t3_value);
+    		},
+    		d(detaching) {
+    			if (detaching) detach(div2);
+    			mounted = false;
+    			run_all(dispose);
+    		}
+    	};
+    }
+
+    function create_fragment$5(ctx) {
+    	let each_1_anchor;
+    	let each_value = /*geoJson*/ ctx[0];
+    	let each_blocks = [];
+
+    	for (let i = 0; i < each_value.length; i += 1) {
+    		each_blocks[i] = create_each_block$1(get_each_context$1(ctx, each_value, i));
+    	}
+
+    	return {
+    		c() {
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].c();
+    			}
+
+    			each_1_anchor = empty();
+    		},
+    		m(target, anchor) {
+    			for (let i = 0; i < each_blocks.length; i += 1) {
+    				each_blocks[i].m(target, anchor);
+    			}
+
+    			insert(target, each_1_anchor, anchor);
+    		},
+    		p(ctx, [dirty]) {
+    			if (dirty & /*focusLayer, geoJson, removeLayer*/ 7) {
+    				each_value = /*geoJson*/ ctx[0];
+    				let i;
+
+    				for (i = 0; i < each_value.length; i += 1) {
+    					const child_ctx = get_each_context$1(ctx, each_value, i);
+
+    					if (each_blocks[i]) {
+    						each_blocks[i].p(child_ctx, dirty);
+    					} else {
+    						each_blocks[i] = create_each_block$1(child_ctx);
+    						each_blocks[i].c();
+    						each_blocks[i].m(each_1_anchor.parentNode, each_1_anchor);
+    					}
+    				}
+
+    				for (; i < each_blocks.length; i += 1) {
+    					each_blocks[i].d(1);
+    				}
+
+    				each_blocks.length = each_value.length;
+    			}
+    		},
+    		i: noop$5,
+    		o: noop$5,
+    		d(detaching) {
+    			destroy_each(each_blocks, detaching);
+    			if (detaching) detach(each_1_anchor);
+    		}
+    	};
+    }
+
+    function instance$5($$self, $$props, $$invalidate) {
+    	let { geoJson } = $$props;
+    	let { removeLayer } = $$props;
+    	let { focusLayer } = $$props;
+
+    	$$self.$$set = $$props => {
+    		if ('geoJson' in $$props) $$invalidate(0, geoJson = $$props.geoJson);
+    		if ('removeLayer' in $$props) $$invalidate(1, removeLayer = $$props.removeLayer);
+    		if ('focusLayer' in $$props) $$invalidate(2, focusLayer = $$props.focusLayer);
+    	};
+
+    	return [geoJson, removeLayer, focusLayer];
+    }
+
+    class Layer_list extends SvelteComponent {
+    	constructor(options) {
+    		super();
+
+    		init(
+    			this,
+    			options,
+    			instance$5,
+    			create_fragment$5,
+    			safe_not_equal,
+    			{
+    				geoJson: 0,
+    				removeLayer: 1,
+    				focusLayer: 2
+    			},
+    			add_css$2
+    		);
+    	}
+    }
+
+    /* src/components/drawer.svelte generated by Svelte v3.46.0 */
+
+    function add_css$1(target) {
+    	append_styles(target, "svelte-dldla7", ".wgt-drawer.svelte-dldla7.svelte-dldla7{top:0;left:0;z-index:1001;height:100vh;max-width:300px;background-color:white;box-shadow:0px 0px 3px rgba(0, 0, 0, .6);display:flex;flex-direction:column}.wgt-drawer-header.svelte-dldla7.svelte-dldla7{margin:10px 0;padding:10px 10px 0 10px;border-bottom:1px solid darkmagenta}.wgt-drawer-body.svelte-dldla7.svelte-dldla7{flex-grow:1}.wgt-drawer-footer.svelte-dldla7.svelte-dldla7{border-top:1px solid #eee;color:#777;flex-shrink:0;padding:5px}.wgt-drawer-footer.svelte-dldla7 a.svelte-dldla7{color:inherit}");
+    }
+
+    // (31:8) {:else}
+    function create_else_block$1(ctx) {
+    	let t;
+
+    	return {
+    		c() {
+    			t = text("DATA");
+    		},
+    		m(target, anchor) {
+    			insert(target, t, anchor);
+    		},
+    		p: noop$5,
+    		i: noop$5,
+    		o: noop$5,
+    		d(detaching) {
+    			if (detaching) detach(t);
+    		}
+    	};
+    }
+
+    // (26:8) {#if curPageNr === 0}
+    function create_if_block$1(ctx) {
+    	let div;
+    	let fileinput;
+    	let t;
+    	let jsonlist;
+    	let current;
+
+    	fileinput = new File_loader({
+    			props: { geoJsonLoaded: /*geoJsonLoaded*/ ctx[0] }
+    		});
+
+    	jsonlist = new Layer_list({
+    			props: {
+    				geoJson: /*geoJson*/ ctx[3],
+    				removeLayer: /*removeLayer*/ ctx[4],
+    				focusLayer: /*focusLayer*/ ctx[5]
+    			}
+    		});
+
+    	return {
+    		c() {
+    			div = element("div");
+    			create_component(fileinput.$$.fragment);
+    			t = space();
+    			create_component(jsonlist.$$.fragment);
+    		},
+    		m(target, anchor) {
+    			insert(target, div, anchor);
+    			mount_component(fileinput, div, null);
+    			insert(target, t, anchor);
+    			mount_component(jsonlist, target, anchor);
+    			current = true;
+    		},
+    		p(ctx, dirty) {
+    			const fileinput_changes = {};
+    			if (dirty & /*geoJsonLoaded*/ 1) fileinput_changes.geoJsonLoaded = /*geoJsonLoaded*/ ctx[0];
+    			fileinput.$set(fileinput_changes);
+    			const jsonlist_changes = {};
+    			if (dirty & /*geoJson*/ 8) jsonlist_changes.geoJson = /*geoJson*/ ctx[3];
+    			if (dirty & /*removeLayer*/ 16) jsonlist_changes.removeLayer = /*removeLayer*/ ctx[4];
+    			if (dirty & /*focusLayer*/ 32) jsonlist_changes.focusLayer = /*focusLayer*/ ctx[5];
+    			jsonlist.$set(jsonlist_changes);
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(fileinput.$$.fragment, local);
+    			transition_in(jsonlist.$$.fragment, local);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(fileinput.$$.fragment, local);
+    			transition_out(jsonlist.$$.fragment, local);
+    			current = false;
+    		},
+    		d(detaching) {
+    			if (detaching) detach(div);
+    			destroy_component(fileinput);
+    			if (detaching) detach(t);
+    			destroy_component(jsonlist, detaching);
+    		}
+    	};
+    }
+
+    function create_fragment$4(ctx) {
+    	let div3;
+    	let div0;
+    	let mapselection;
+    	let t0;
+    	let div1;
+    	let current_block_type_index;
+    	let if_block;
+    	let t1;
+    	let div2;
+    	let current;
+
+    	mapselection = new Map_selection({
+    			props: {
+    				mapAvailable: /*mapAvailable*/ ctx[1],
+    				changeMapVisibility: /*changeMapVisibility*/ ctx[2]
+    			}
+    		});
+
+    	const if_block_creators = [create_if_block$1, create_else_block$1];
+    	const if_blocks = [];
+
+    	function select_block_type(ctx, dirty) {
+    		if (/*curPageNr*/ ctx[6] === 0) return 0;
+    		return 1;
+    	}
+
+    	current_block_type_index = select_block_type(ctx);
+    	if_block = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
+
+    	return {
+    		c() {
+    			div3 = element("div");
+    			div0 = element("div");
+    			create_component(mapselection.$$.fragment);
+    			t0 = space();
+    			div1 = element("div");
+    			if_block.c();
+    			t1 = space();
+    			div2 = element("div");
+    			div2.innerHTML = `<small>Made by <a href="https://gruenecho.de" class="svelte-dldla7">Grünecho</a> for <a href="https://frab.fossgis-konferenz.de/2022/" class="svelte-dldla7">FOSSGIS-Konferenz 2022</a></small>`;
+    			attr(div0, "class", "wgt-drawer-header svelte-dldla7");
+    			attr(div1, "class", "wgt-drawer-body svelte-dldla7");
+    			attr(div2, "class", "wgt-drawer-footer svelte-dldla7");
+    			attr(div3, "class", "wgt-drawer svelte-dldla7");
+    		},
+    		m(target, anchor) {
+    			insert(target, div3, anchor);
+    			append(div3, div0);
+    			mount_component(mapselection, div0, null);
+    			append(div3, t0);
+    			append(div3, div1);
+    			if_blocks[current_block_type_index].m(div1, null);
+    			append(div3, t1);
+    			append(div3, div2);
+    			current = true;
+    		},
+    		p(ctx, [dirty]) {
+    			const mapselection_changes = {};
+    			if (dirty & /*mapAvailable*/ 2) mapselection_changes.mapAvailable = /*mapAvailable*/ ctx[1];
+    			if (dirty & /*changeMapVisibility*/ 4) mapselection_changes.changeMapVisibility = /*changeMapVisibility*/ ctx[2];
+    			mapselection.$set(mapselection_changes);
+    			let previous_block_index = current_block_type_index;
+    			current_block_type_index = select_block_type(ctx);
+
+    			if (current_block_type_index === previous_block_index) {
+    				if_blocks[current_block_type_index].p(ctx, dirty);
+    			} else {
+    				group_outros();
+
+    				transition_out(if_blocks[previous_block_index], 1, 1, () => {
+    					if_blocks[previous_block_index] = null;
+    				});
+
+    				check_outros();
+    				if_block = if_blocks[current_block_type_index];
+
+    				if (!if_block) {
+    					if_block = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
+    					if_block.c();
+    				} else {
+    					if_block.p(ctx, dirty);
+    				}
+
+    				transition_in(if_block, 1);
+    				if_block.m(div1, null);
+    			}
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(mapselection.$$.fragment, local);
+    			transition_in(if_block);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(mapselection.$$.fragment, local);
+    			transition_out(if_block);
+    			current = false;
+    		},
+    		d(detaching) {
+    			if (detaching) detach(div3);
+    			destroy_component(mapselection);
+    			if_blocks[current_block_type_index].d();
+    		}
+    	};
+    }
+
+    function instance$4($$self, $$props, $$invalidate) {
+    	let { geoJsonLoaded } = $$props;
+    	let { mapAvailable } = $$props;
+    	let { changeMapVisibility } = $$props;
+    	let { geoJson } = $$props;
+    	let { removeLayer } = $$props;
+    	let { focusLayer } = $$props;
+    	let { center } = $$props;
+    	let curPageNr = 0;
+
+    	$$self.$$set = $$props => {
+    		if ('geoJsonLoaded' in $$props) $$invalidate(0, geoJsonLoaded = $$props.geoJsonLoaded);
+    		if ('mapAvailable' in $$props) $$invalidate(1, mapAvailable = $$props.mapAvailable);
+    		if ('changeMapVisibility' in $$props) $$invalidate(2, changeMapVisibility = $$props.changeMapVisibility);
+    		if ('geoJson' in $$props) $$invalidate(3, geoJson = $$props.geoJson);
+    		if ('removeLayer' in $$props) $$invalidate(4, removeLayer = $$props.removeLayer);
+    		if ('focusLayer' in $$props) $$invalidate(5, focusLayer = $$props.focusLayer);
+    		if ('center' in $$props) $$invalidate(7, center = $$props.center);
+    	};
+
+    	return [
+    		geoJsonLoaded,
+    		mapAvailable,
+    		changeMapVisibility,
+    		geoJson,
+    		removeLayer,
+    		focusLayer,
+    		curPageNr,
+    		center
+    	];
+    }
+
+    class Drawer extends SvelteComponent {
+    	constructor(options) {
+    		super();
+
+    		init(
+    			this,
+    			options,
+    			instance$4,
+    			create_fragment$4,
+    			safe_not_equal,
+    			{
+    				geoJsonLoaded: 0,
+    				mapAvailable: 1,
+    				changeMapVisibility: 2,
+    				geoJson: 3,
+    				removeLayer: 4,
+    				focusLayer: 5,
+    				center: 7
+    			},
+    			add_css$1
+    		);
     	}
     }
 
@@ -35113,27 +36015,65 @@ var GisTemplate = (function () {
 
     function create_fragment$3(ctx) {
     	let div;
+    	let t;
+    	let current;
+    	const default_slot_template = /*#slots*/ ctx[6].default;
+    	const default_slot = create_slot(default_slot_template, ctx, /*$$scope*/ ctx[5], null);
 
     	return {
     		c() {
     			div = element("div");
+    			t = space();
+    			if (default_slot) default_slot.c();
     			attr(div, "class", "map");
     		},
     		m(target, anchor) {
     			insert(target, div, anchor);
-    			/*div_binding*/ ctx[5](div);
+    			/*div_binding*/ ctx[7](div);
+    			insert(target, t, anchor);
+
+    			if (default_slot) {
+    				default_slot.m(target, anchor);
+    			}
+
+    			current = true;
     		},
-    		p: noop$5,
-    		i: noop$5,
-    		o: noop$5,
+    		p(ctx, [dirty]) {
+    			if (default_slot) {
+    				if (default_slot.p && (!current || dirty & /*$$scope*/ 32)) {
+    					update_slot_base(
+    						default_slot,
+    						default_slot_template,
+    						ctx,
+    						/*$$scope*/ ctx[5],
+    						!current
+    						? get_all_dirty_from_scope(/*$$scope*/ ctx[5])
+    						: get_slot_changes(default_slot_template, /*$$scope*/ ctx[5], dirty, null),
+    						null
+    					);
+    				}
+    			}
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(default_slot, local);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(default_slot, local);
+    			current = false;
+    		},
     		d(detaching) {
     			if (detaching) detach(div);
-    			/*div_binding*/ ctx[5](null);
+    			/*div_binding*/ ctx[7](null);
+    			if (detaching) detach(t);
+    			if (default_slot) default_slot.d(detaching);
     		}
     	};
     }
 
     function instance$3($$self, $$props, $$invalidate) {
+    	let { $$slots: slots = {}, $$scope } = $$props;
     	let { center } = $$props;
     	let { changeCenter } = $$props;
     	let { geoJson } = $$props;
@@ -35149,11 +36089,16 @@ var GisTemplate = (function () {
     	};
 
     	const updateGeoJson = geoJson => {
-    		if (view && geoJson.type) {
-    			const features = new GeoJSON$1({ featureProjection: 'EPSG:3857' }).readFeatures(geoJson);
+    		if (!geoJsonLayer) return;
+    		geoJsonLayer.clear();
+    		if (!view || !geoJson.length) return;
+
+    		geoJson.forEach(element => {
+    			const features = new GeoJSON$1({ featureProjection: 'EPSG:3857' }).readFeatures(element.geoJson);
     			geoJsonLayer.addFeatures(features);
-    			$$invalidate(4, prevGeoJson = geoJson);
-    		}
+    		});
+
+    		$$invalidate(4, prevGeoJson = geoJson);
     	};
 
     	onMount(() => {
@@ -35161,7 +36106,7 @@ var GisTemplate = (function () {
     		geoJsonLayer = new VectorSource$1();
 
     		const map = new Map$2({
-    				controls: [],
+    				//controls: {attribut},
     				target: mapElement,
     				view,
     				layers: [
@@ -35195,20 +36140,28 @@ var GisTemplate = (function () {
     		if ('center' in $$props) $$invalidate(1, center = $$props.center);
     		if ('changeCenter' in $$props) $$invalidate(2, changeCenter = $$props.changeCenter);
     		if ('geoJson' in $$props) $$invalidate(3, geoJson = $$props.geoJson);
+    		if ('$$scope' in $$props) $$invalidate(5, $$scope = $$props.$$scope);
     	};
 
     	$$self.$$.update = () => {
     		if ($$self.$$.dirty & /*center, prevGeoJson, geoJson*/ 26) {
     			{
-    				//if(prevCenter && (prevCenter.latitude !== center.latitude || prevCenter.longitude !== center.longitude || prevCenter.zoom !== center.zoom))
     				setCenter(center);
-
     				if (prevGeoJson !== geoJson) updateGeoJson(geoJson);
     			}
     		}
     	};
 
-    	return [mapElement, center, changeCenter, geoJson, prevGeoJson, div_binding];
+    	return [
+    		mapElement,
+    		center,
+    		changeCenter,
+    		geoJson,
+    		prevGeoJson,
+    		$$scope,
+    		slots,
+    		div_binding
+    	];
     }
 
     class Openlayers extends SvelteComponent {
@@ -35236,27 +36189,65 @@ var GisTemplate = (function () {
 
     function create_fragment$2(ctx) {
     	let div;
+    	let t;
+    	let current;
+    	const default_slot_template = /*#slots*/ ctx[7].default;
+    	const default_slot = create_slot(default_slot_template, ctx, /*$$scope*/ ctx[6], null);
 
     	return {
     		c() {
     			div = element("div");
+    			t = space();
+    			if (default_slot) default_slot.c();
     			attr(div, "class", "map");
     		},
     		m(target, anchor) {
     			insert(target, div, anchor);
-    			/*div_binding*/ ctx[6](div);
+    			/*div_binding*/ ctx[8](div);
+    			insert(target, t, anchor);
+
+    			if (default_slot) {
+    				default_slot.m(target, anchor);
+    			}
+
+    			current = true;
     		},
-    		p: noop$5,
-    		i: noop$5,
-    		o: noop$5,
+    		p(ctx, [dirty]) {
+    			if (default_slot) {
+    				if (default_slot.p && (!current || dirty & /*$$scope*/ 64)) {
+    					update_slot_base(
+    						default_slot,
+    						default_slot_template,
+    						ctx,
+    						/*$$scope*/ ctx[6],
+    						!current
+    						? get_all_dirty_from_scope(/*$$scope*/ ctx[6])
+    						: get_slot_changes(default_slot_template, /*$$scope*/ ctx[6], dirty, null),
+    						null
+    					);
+    				}
+    			}
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(default_slot, local);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(default_slot, local);
+    			current = false;
+    		},
     		d(detaching) {
     			if (detaching) detach(div);
-    			/*div_binding*/ ctx[6](null);
+    			/*div_binding*/ ctx[8](null);
+    			if (detaching) detach(t);
+    			if (default_slot) default_slot.d(detaching);
     		}
     	};
     }
 
     function instance$2($$self, $$props, $$invalidate) {
+    	let { $$slots: slots = {}, $$scope } = $$props;
     	let { center } = $$props;
     	let { changeCenter } = $$props;
     	let { geoJson } = $$props;
@@ -35273,14 +36264,18 @@ var GisTemplate = (function () {
     	};
 
     	const updateGeoJson = geoJson => {
-    		if (map && geoJson.type) {
-    			geoJsonLayer.addData(geoJson);
-    			$$invalidate(5, prevGeoJson = geoJson);
-    		}
+    		if (!map || !geoJson.length) return;
+    		geoJsonLayer.clearLayers();
+
+    		geoJson.forEach(element => {
+    			geoJsonLayer.addData(element.geoJson);
+    		});
+
+    		$$invalidate(5, prevGeoJson = geoJson);
     	};
 
     	onMount(() => {
-    		map = L$1.map(mapElement, { zoomControl: false });
+    		map = L$1.map(mapElement);
     		setCenter(center);
 
     		L$1.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -35311,6 +36306,7 @@ var GisTemplate = (function () {
     		if ('center' in $$props) $$invalidate(1, center = $$props.center);
     		if ('changeCenter' in $$props) $$invalidate(2, changeCenter = $$props.changeCenter);
     		if ('geoJson' in $$props) $$invalidate(3, geoJson = $$props.geoJson);
+    		if ('$$scope' in $$props) $$invalidate(6, $$scope = $$props.$$scope);
     	};
 
     	$$self.$$.update = () => {
@@ -35329,6 +36325,8 @@ var GisTemplate = (function () {
     		geoJson,
     		prevCenter,
     		prevGeoJson,
+    		$$scope,
+    		slots,
     		div_binding
     	];
     }
@@ -77096,14 +78094,10 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     TileLayer.layerName = 'TileLayer';
     TileLayer.defaultProps = defaultProps;
 
-    const getTileLayer = (data, minZoom = 10, maxZoom = 19, visible = true) => {
+    const getTileLayer = (data) => {
         return new TileLayer({
-            id: 'osm',
+            id: 'tile-layer',
             data,
-            visible,
-            maxZoom,
-            minZoom,
-            pickable:true,
             renderSubLayers: props => {
                 const {
                     bbox: {west, south, east, north}
@@ -77120,31 +78114,88 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
         })
     };
 
+    const getGeoJsonLayer = (id, data) => {
+        return new GeoJsonLayer({
+            id,
+            data,
+            stroked: false,
+            filled: true,
+            extruded: true,
+            pointType: 'circle',
+            lineWidthScale: 20,
+            lineWidthMinPixels: 2,
+            getFillColor: [50, 135, 255, 80],
+            //getLineColor: d => colorToRGBArray([50, 135, 255, 255]), //d.properties.color
+            getLineColor: [0, 0, 0, 200],
+            getPointRadius: 100,
+            getLineWidth: 1,
+            getElevation: 30
+        })
+    };
+
     /* src/components/maps/deck-gl.svelte generated by Svelte v3.46.0 */
 
     function create_fragment$1(ctx) {
     	let div;
+    	let t;
+    	let current;
+    	const default_slot_template = /*#slots*/ ctx[6].default;
+    	const default_slot = create_slot(default_slot_template, ctx, /*$$scope*/ ctx[5], null);
 
     	return {
     		c() {
     			div = element("div");
+    			t = space();
+    			if (default_slot) default_slot.c();
     			attr(div, "class", "map");
     		},
     		m(target, anchor) {
     			insert(target, div, anchor);
-    			/*div_binding*/ ctx[4](div);
+    			/*div_binding*/ ctx[7](div);
+    			insert(target, t, anchor);
+
+    			if (default_slot) {
+    				default_slot.m(target, anchor);
+    			}
+
+    			current = true;
     		},
-    		p: noop$5,
-    		i: noop$5,
-    		o: noop$5,
+    		p(ctx, [dirty]) {
+    			if (default_slot) {
+    				if (default_slot.p && (!current || dirty & /*$$scope*/ 32)) {
+    					update_slot_base(
+    						default_slot,
+    						default_slot_template,
+    						ctx,
+    						/*$$scope*/ ctx[5],
+    						!current
+    						? get_all_dirty_from_scope(/*$$scope*/ ctx[5])
+    						: get_slot_changes(default_slot_template, /*$$scope*/ ctx[5], dirty, null),
+    						null
+    					);
+    				}
+    			}
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(default_slot, local);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(default_slot, local);
+    			current = false;
+    		},
     		d(detaching) {
     			if (detaching) detach(div);
-    			/*div_binding*/ ctx[4](null);
+    			/*div_binding*/ ctx[7](null);
+    			if (detaching) detach(t);
+    			if (default_slot) default_slot.d(detaching);
     		}
     	};
     }
 
     function instance$1($$self, $$props, $$invalidate) {
+    	let { $$slots: slots = {}, $$scope } = $$props;
     	let { center } = $$props;
     	let { changeCenter } = $$props;
     	let { geoJson } = $$props;
@@ -77152,6 +78203,8 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     	let layers = [];
     	let INITIAL_VIEW_STATE = { ...center, ...{ bearing: 0, pitch: 0 } };
     	let deckgl;
+    	let prevGeoJson;
+    	let geoJsonData = [];
 
     	const server = [
     		'https://a.tile.openstreetmap.org/{z}/{x}/{y}.png',
@@ -77161,16 +78214,35 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
 
     	const setCenter = newCenter => {
     		if (!deckgl) return;
-    		console.log(INITIAL_VIEW_STATE);
 
-    		//INITIAL_VIEW_STATE = {...INITIAL_VIEW_STATE, ...newCenter}
     		deckgl.setProps({
     			initialViewState: { ...INITIAL_VIEW_STATE, ...newCenter }
     		});
     	};
 
+    	const removeLayer = id => {
+    		const keyById = layers.findIndex(element => element.id === id);
+    		if (keyById === -1) return;
+    		layers.splice(keyById, 1);
+    	};
+
+    	const updateGeoJson = geoJson => {
+    		geoJson.forEach(element => {
+    			console.log(element);
+    			removeLayer('geo-json-' + element.fileName);
+    			const jsonLayer = getGeoJsonLayer('geo-json-' + element.fileName, element.geoJson);
+    			layers.push(jsonLayer);
+    		});
+
+    		console.log(layers);
+
+    		//geoJsonData = newLayer;
+    		$$invalidate(4, prevGeoJson = geoJson);
+    	};
+
     	onMount(() => {
-    		layers.push(getTileLayer(server, 5, 19));
+    		layers.unshift(getTileLayer(server));
+    		updateGeoJson(geoJsonData);
 
     		deckgl = new Deck({
     				parent: mapElement,
@@ -77191,17 +78263,28 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     		if ('center' in $$props) $$invalidate(1, center = $$props.center);
     		if ('changeCenter' in $$props) $$invalidate(2, changeCenter = $$props.changeCenter);
     		if ('geoJson' in $$props) $$invalidate(3, geoJson = $$props.geoJson);
+    		if ('$$scope' in $$props) $$invalidate(5, $$scope = $$props.$$scope);
     	};
 
     	$$self.$$.update = () => {
-    		if ($$self.$$.dirty & /*center*/ 2) {
+    		if ($$self.$$.dirty & /*center, prevGeoJson, geoJson*/ 26) {
     			{
     				setCenter(center);
+    				if (prevGeoJson !== geoJson) updateGeoJson(geoJson);
     			}
     		}
     	};
 
-    	return [mapElement, center, changeCenter, geoJson, div_binding];
+    	return [
+    		mapElement,
+    		center,
+    		changeCenter,
+    		geoJson,
+    		prevGeoJson,
+    		$$scope,
+    		slots,
+    		div_binding
+    	];
     }
 
     class Deck_gl extends SvelteComponent {
@@ -77214,27 +78297,194 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     /* src/app.svelte generated by Svelte v3.46.0 */
 
     function add_css(target) {
-    	append_styles(target, "svelte-5zbgr3", ".map-grid.svelte-5zbgr3{background-color:#333}");
+    	append_styles(target, "svelte-5k8vku", ".map-grid.svelte-5k8vku{background-color:#333;display:flex;flex-wrap:wrap;height:calc(100vh)}.btn-toggle-map.svelte-5k8vku{position:absolute;z-index:1000;top:0;right:0;padding:10px;background-color:rgba(255,255,255,.9);border:none;border-bottom-left-radius:10px}");
     }
 
     function get_each_context(ctx, list, i) {
     	const child_ctx = ctx.slice();
-    	child_ctx[6] = list[i];
+    	child_ctx[11] = list[i];
     	return child_ctx;
     }
 
-    // (46:4) {#each maps as map}
-    function create_each_block(ctx) {
+    // (91:4) {#if drawerState}
+    function create_if_block_2(ctx) {
+    	let drawer;
+    	let current;
+
+    	drawer = new Drawer({
+    			props: {
+    				geoJsonLoaded: /*geoJsonLoaded*/ ctx[6],
+    				mapAvailable: /*mapAvailable*/ ctx[0],
+    				changeMapVisibility: /*changeMapVisibility*/ ctx[4],
+    				geoJson: /*geoJson*/ ctx[1],
+    				removeLayer: /*removeLayer*/ ctx[7],
+    				center: /*mapsCenter*/ ctx[2],
+    				focusLayer: /*focusLayer*/ ctx[8]
+    			}
+    		});
+
+    	return {
+    		c() {
+    			create_component(drawer.$$.fragment);
+    		},
+    		m(target, anchor) {
+    			mount_component(drawer, target, anchor);
+    			current = true;
+    		},
+    		p(ctx, dirty) {
+    			const drawer_changes = {};
+    			if (dirty & /*mapAvailable*/ 1) drawer_changes.mapAvailable = /*mapAvailable*/ ctx[0];
+    			if (dirty & /*geoJson*/ 2) drawer_changes.geoJson = /*geoJson*/ ctx[1];
+    			if (dirty & /*mapsCenter*/ 4) drawer_changes.center = /*mapsCenter*/ ctx[2];
+    			drawer.$set(drawer_changes);
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(drawer.$$.fragment, local);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(drawer.$$.fragment, local);
+    			current = false;
+    		},
+    		d(detaching) {
+    			destroy_component(drawer, detaching);
+    		}
+    	};
+    }
+
+    // (104:8) {#if map.visible}
+    function create_if_block(ctx) {
+    	let div;
+    	let current_block_type_index;
+    	let if_block;
+    	let t;
+    	let div_id_value;
+    	let current;
+    	const if_block_creators = [create_if_block_1, create_else_block];
+    	const if_blocks = [];
+
+    	function select_block_type(ctx, dirty) {
+    		if (/*map*/ ctx[11].visible) return 0;
+    		return 1;
+    	}
+
+    	current_block_type_index = select_block_type(ctx);
+    	if_block = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
+
+    	return {
+    		c() {
+    			div = element("div");
+    			if_block.c();
+    			t = space();
+    			attr(div, "id", div_id_value = /*map*/ ctx[11].name);
+    		},
+    		m(target, anchor) {
+    			insert(target, div, anchor);
+    			if_blocks[current_block_type_index].m(div, null);
+    			append(div, t);
+    			current = true;
+    		},
+    		p(ctx, dirty) {
+    			let previous_block_index = current_block_type_index;
+    			current_block_type_index = select_block_type(ctx);
+
+    			if (current_block_type_index === previous_block_index) {
+    				if_blocks[current_block_type_index].p(ctx, dirty);
+    			} else {
+    				group_outros();
+
+    				transition_out(if_blocks[previous_block_index], 1, 1, () => {
+    					if_blocks[previous_block_index] = null;
+    				});
+
+    				check_outros();
+    				if_block = if_blocks[current_block_type_index];
+
+    				if (!if_block) {
+    					if_block = if_blocks[current_block_type_index] = if_block_creators[current_block_type_index](ctx);
+    					if_block.c();
+    				} else {
+    					if_block.p(ctx, dirty);
+    				}
+
+    				transition_in(if_block, 1);
+    				if_block.m(div, t);
+    			}
+
+    			if (!current || dirty & /*mapAvailable*/ 1 && div_id_value !== (div_id_value = /*map*/ ctx[11].name)) {
+    				attr(div, "id", div_id_value);
+    			}
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(if_block);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(if_block);
+    			current = false;
+    		},
+    		d(detaching) {
+    			if (detaching) detach(div);
+    			if_blocks[current_block_type_index].d();
+    		}
+    	};
+    }
+
+    // (110:16) {:else}
+    function create_else_block(ctx) {
+    	let div;
+    	let button;
+    	let mounted;
+    	let dispose;
+
+    	function click_handler() {
+    		return /*click_handler*/ ctx[10](/*map*/ ctx[11]);
+    	}
+
+    	return {
+    		c() {
+    			div = element("div");
+    			button = element("button");
+    			button.textContent = "Add";
+    			attr(button, "class", "btn-toggle-map svelte-5k8vku");
+    			attr(button, "type", "button");
+    		},
+    		m(target, anchor) {
+    			insert(target, div, anchor);
+    			append(div, button);
+
+    			if (!mounted) {
+    				dispose = listen$1(button, "click", click_handler);
+    				mounted = true;
+    			}
+    		},
+    		p(new_ctx, dirty) {
+    			ctx = new_ctx;
+    		},
+    		i: noop$5,
+    		o: noop$5,
+    		d(detaching) {
+    			if (detaching) detach(div);
+    			mounted = false;
+    			dispose();
+    		}
+    	};
+    }
+
+    // (106:16) {#if map.visible}
+    function create_if_block_1(ctx) {
     	let switch_instance;
     	let switch_instance_anchor;
     	let current;
-    	var switch_value = /*map*/ ctx[6];
+    	var switch_value = /*map*/ ctx[11].component;
 
     	function switch_props(ctx) {
     		return {
     			props: {
-    				center: /*center*/ ctx[2],
-    				changeCenter: /*changeCenter*/ ctx[4],
+    				center: /*mapsCenter*/ ctx[2],
+    				changeCenter: /*changeCenter*/ ctx[5],
     				geoJson: /*geoJson*/ ctx[1]
     			}
     		};
@@ -77259,10 +78509,10 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     		},
     		p(ctx, dirty) {
     			const switch_instance_changes = {};
-    			if (dirty & /*center*/ 4) switch_instance_changes.center = /*center*/ ctx[2];
+    			if (dirty & /*mapsCenter*/ 4) switch_instance_changes.center = /*mapsCenter*/ ctx[2];
     			if (dirty & /*geoJson*/ 2) switch_instance_changes.geoJson = /*geoJson*/ ctx[1];
 
-    			if (switch_value !== (switch_value = /*map*/ ctx[6])) {
+    			if (switch_value !== (switch_value = /*map*/ ctx[11].component)) {
     				if (switch_instance) {
     					group_outros();
     					const old_component = switch_instance;
@@ -77302,21 +78552,78 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     	};
     }
 
+    // (103:4) {#each mapAvailable as map}
+    function create_each_block(ctx) {
+    	let if_block_anchor;
+    	let current;
+    	let if_block = /*map*/ ctx[11].visible && create_if_block(ctx);
+
+    	return {
+    		c() {
+    			if (if_block) if_block.c();
+    			if_block_anchor = empty();
+    		},
+    		m(target, anchor) {
+    			if (if_block) if_block.m(target, anchor);
+    			insert(target, if_block_anchor, anchor);
+    			current = true;
+    		},
+    		p(ctx, dirty) {
+    			if (/*map*/ ctx[11].visible) {
+    				if (if_block) {
+    					if_block.p(ctx, dirty);
+
+    					if (dirty & /*mapAvailable*/ 1) {
+    						transition_in(if_block, 1);
+    					}
+    				} else {
+    					if_block = create_if_block(ctx);
+    					if_block.c();
+    					transition_in(if_block, 1);
+    					if_block.m(if_block_anchor.parentNode, if_block_anchor);
+    				}
+    			} else if (if_block) {
+    				group_outros();
+
+    				transition_out(if_block, 1, 1, () => {
+    					if_block = null;
+    				});
+
+    				check_outros();
+    			}
+    		},
+    		i(local) {
+    			if (current) return;
+    			transition_in(if_block);
+    			current = true;
+    		},
+    		o(local) {
+    			transition_out(if_block);
+    			current = false;
+    		},
+    		d(detaching) {
+    			if (if_block) if_block.d(detaching);
+    			if (detaching) detach(if_block_anchor);
+    		}
+    	};
+    }
+
     function create_fragment(ctx) {
-    	let navbar;
-    	let t;
     	let div;
+    	let navbar;
+    	let t0;
+    	let t1;
     	let current;
 
     	navbar = new Nav_bar({
     			props: {
-    				addMap: /*addMap*/ ctx[3],
-    				center: /*center*/ ctx[2],
-    				geoJsonLoaded: /*geoJsonLoaded*/ ctx[5]
+    				toggleDrawer: /*toggleDrawer*/ ctx[9],
+    				drawerState: /*drawerState*/ ctx[3]
     			}
     		});
 
-    	let each_value = /*maps*/ ctx[0];
+    	let if_block = /*drawerState*/ ctx[3] && create_if_block_2(ctx);
+    	let each_value = /*mapAvailable*/ ctx[0];
     	let each_blocks = [];
 
     	for (let i = 0; i < each_value.length; i += 1) {
@@ -77329,20 +78636,24 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
 
     	return {
     		c() {
-    			create_component(navbar.$$.fragment);
-    			t = space();
     			div = element("div");
+    			create_component(navbar.$$.fragment);
+    			t0 = space();
+    			if (if_block) if_block.c();
+    			t1 = space();
 
     			for (let i = 0; i < each_blocks.length; i += 1) {
     				each_blocks[i].c();
     			}
 
-    			attr(div, "class", "map-grid svelte-5zbgr3");
+    			attr(div, "class", "map-grid svelte-5k8vku");
     		},
     		m(target, anchor) {
-    			mount_component(navbar, target, anchor);
-    			insert(target, t, anchor);
     			insert(target, div, anchor);
+    			mount_component(navbar, div, null);
+    			append(div, t0);
+    			if (if_block) if_block.m(div, null);
+    			append(div, t1);
 
     			for (let i = 0; i < each_blocks.length; i += 1) {
     				each_blocks[i].m(div, null);
@@ -77352,11 +78663,34 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     		},
     		p(ctx, [dirty]) {
     			const navbar_changes = {};
-    			if (dirty & /*center*/ 4) navbar_changes.center = /*center*/ ctx[2];
+    			if (dirty & /*drawerState*/ 8) navbar_changes.drawerState = /*drawerState*/ ctx[3];
     			navbar.$set(navbar_changes);
 
-    			if (dirty & /*maps, center, changeCenter, geoJson*/ 23) {
-    				each_value = /*maps*/ ctx[0];
+    			if (/*drawerState*/ ctx[3]) {
+    				if (if_block) {
+    					if_block.p(ctx, dirty);
+
+    					if (dirty & /*drawerState*/ 8) {
+    						transition_in(if_block, 1);
+    					}
+    				} else {
+    					if_block = create_if_block_2(ctx);
+    					if_block.c();
+    					transition_in(if_block, 1);
+    					if_block.m(div, t1);
+    				}
+    			} else if (if_block) {
+    				group_outros();
+
+    				transition_out(if_block, 1, 1, () => {
+    					if_block = null;
+    				});
+
+    				check_outros();
+    			}
+
+    			if (dirty & /*mapAvailable, mapsCenter, changeCenter, geoJson, changeMapVisibility*/ 55) {
+    				each_value = /*mapAvailable*/ ctx[0];
     				let i;
 
     				for (i = 0; i < each_value.length; i += 1) {
@@ -77385,6 +78719,7 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     		i(local) {
     			if (current) return;
     			transition_in(navbar.$$.fragment, local);
+    			transition_in(if_block);
 
     			for (let i = 0; i < each_value.length; i += 1) {
     				transition_in(each_blocks[i]);
@@ -77394,6 +78729,7 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     		},
     		o(local) {
     			transition_out(navbar.$$.fragment, local);
+    			transition_out(if_block);
     			each_blocks = each_blocks.filter(Boolean);
 
     			for (let i = 0; i < each_blocks.length; i += 1) {
@@ -77403,49 +78739,104 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     			current = false;
     		},
     		d(detaching) {
-    			destroy_component(navbar, detaching);
-    			if (detaching) detach(t);
     			if (detaching) detach(div);
+    			destroy_component(navbar);
+    			if (if_block) if_block.d();
     			destroy_each(each_blocks, detaching);
     		}
     	};
     }
 
     function instance($$self, $$props, $$invalidate) {
-    	let maps = [Openlayers, Leaflet, Deck_gl];
-    	let geoJson = {};
+    	let mapAvailable = [
+    		{
+    			component: Openlayers,
+    			name: 'OpenLayers',
+    			documentation: 'https://openlayers.org/',
+    			visible: true
+    		},
+    		{
+    			component: Leaflet,
+    			name: 'Leaflet',
+    			documentation: 'https://leafletjs.com/',
+    			visible: false
+    		},
+    		{
+    			component: Deck_gl,
+    			name: 'DECK.GL',
+    			documentation: 'https://deck.gl/',
+    			visible: false
+    		}
+    	];
 
-    	let center = {
+    	let geoJson = [];
+
+    	let mapsCenter = {
     		latitude: 47.403001,
     		longitude: 13.971791,
     		zoom: 15
     	};
 
-    	const addMap = type => {
-    		switch (type) {
-    			case 'ol':
-    				$$invalidate(0, maps = [...maps, Openlayers]);
-    				break;
-    			case 'leaflet':
-    				$$invalidate(0, maps = [...maps, Leaflet]);
-    				break;
-    			case 'deckgl':
-    				$$invalidate(0, maps = [...maps, Deck_gl]);
-    				break;
+    	let drawerState = false;
+
+    	const changeMapVisibility = (component, visibility, singleView) => {
+    		if (singleView) {
+    			$$invalidate(0, mapAvailable = mapAvailable.map(e => {
+    				e.visible = e === component ? true : false;
+    				return e;
+    			}));
+    		} else {
+    			component.visible = visibility;
+    			const index = mapAvailable.indexOf(component);
+    			$$invalidate(0, mapAvailable[index] = component, mapAvailable);
     		}
     	};
 
     	const changeCenter = newCenter => {
-    		//if((newCenter.latitude !== center.latitude || newCenter.longitude !== center.longitude || newCenter.zoom !== center.zoom))
-    		$$invalidate(2, center = { ...center, ...newCenter });
+    		$$invalidate(2, mapsCenter = { ...mapsCenter, ...newCenter });
     	};
 
-    	const geoJsonLoaded = newGeoJson => {
-    		console.log('new geoJson1');
-    		$$invalidate(1, geoJson = { ...geoJson, ...newGeoJson });
+    	const geoJsonLoaded = (fileName, newGeoJson) => {
+    		$$invalidate(1, geoJson = [...geoJson, { fileName, geoJson: newGeoJson }]);
     	};
 
-    	return [maps, geoJson, center, addMap, changeCenter, geoJsonLoaded];
+    	const removeLayer = layer => {
+    		$$invalidate(1, geoJson = geoJson.filter(e => e !== layer));
+    	};
+
+    	const focusLayer = layer => {
+    		const centerFeature = center(layer.geoJson);
+
+    		$$invalidate(2, mapsCenter = {
+    			...mapsCenter,
+    			...{
+    				latitude: centerFeature.geometry.coordinates[1],
+    				longitude: centerFeature.geometry.coordinates[0]
+    			}
+    		});
+
+    		console.log(centerFeature);
+    	};
+
+    	const toggleDrawer = () => {
+    		$$invalidate(3, drawerState = !drawerState);
+    	};
+
+    	const click_handler = map => changeMapVisibility(map, true);
+
+    	return [
+    		mapAvailable,
+    		geoJson,
+    		mapsCenter,
+    		drawerState,
+    		changeMapVisibility,
+    		changeCenter,
+    		geoJsonLoaded,
+    		removeLayer,
+    		focusLayer,
+    		toggleDrawer,
+    		click_handler
+    	];
     }
 
     class App extends SvelteComponent {
@@ -77458,6 +78849,12 @@ vec4 transform_getInput(sampler2D texSampler, vec2 size) {
     const app = new App({
       target: document.body
     });
+
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', function() {
+          navigator.serviceWorker.register('sw.js');
+      });
+    }
 
     return app;
 
